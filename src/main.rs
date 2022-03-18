@@ -1,9 +1,15 @@
-use parser::tokenize_and_parse;
+use std::fs;
+use std::rc::Rc;
 
-mod structs;
+use crate::parser::try_parse_config;
+
 mod parser;
 
+mod graphics;
+
 fn main() {
-	let text = "prefix.{address1 address2 address3-{inner: a b c}}.suffix:80 > example.com:8888!{80 81 {inner: 82..84}};";
-	tokenize_and_parse(text);
+	// let source = Rc::new("config.txt".to_string());
+	// let text = Rc::new(fs::read_to_string(source.as_ref()).unwrap());
+	// println!("{:#?}", try_parse_config(source, text).unwrap());
+	graphics::start();
 }

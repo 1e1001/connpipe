@@ -1,0 +1,8 @@
+# fun example configuration file
+
+@conn-map "this conn-map"
+*:8080!conn-map > @conn-map;
+
+# pipe a minecraft server with people needing more effort to access it
+@conn-map "sample description value"
+*:8000!mc-server > :25565;
