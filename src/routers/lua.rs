@@ -2,10 +2,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use async_trait::async_trait;
-use log::info;
+use log::{info, trace};
 use mlua::{
 	chunk, AsChunk, FromLua, Function, Integer, Lua, LuaOptions, StdLib, ToLua, UserData,
 	UserDataMethods, Value,
@@ -134,9 +134,8 @@ const G_REGISTRY: u8 = 3;
 const G_CALLBACKS: u8 = 4;
 const G_CALLBACKS_REVERSE: u8 = 5;
 const G_RESOLVE: u8 = 6;
-const G_MAX_SUBPORT_LENGTH: u8 = 7;
-const G_FINISH: u8 = 8;
-const G_REQUIRE_CACHE: u8 = 9;
+const G_FINISH: u8 = 7;
+const G_REQUIRE_CACHE: u8 = 8;
 
 struct LuaFile {
 	path: PathBuf,
@@ -168,7 +167,7 @@ pub struct LuaRouter {
 }
 
 impl LuaRouter {
-	pub async fn new(path: impl AsRef<Path>) -> CResult<Self> {
+	pub async fn new(path: impl Into<PathBuf>) -> CResult<Self> {
 		info!("[lua] initializing");
 		let lua = Lua::new_with(
 			StdLib::MATH | StdLib::STRING | StdLib::TABLE | StdLib::COROUTINE | StdLib::UTF8,
@@ -226,7 +225,6 @@ impl LuaRouter {
 						return res;
 					end
 				end
-				int[$G_MAX_SUBPORT_LENGTH] = 256;
 				int[$G_FINISH] = function()
 					local old_route = _G.route;
 					_G.route = function(addr, port, subport, callback)
@@ -293,6 +291,9 @@ impl LuaRouter {
 						return nil;
 					end
 				end
+				_G.config = {
+					max_subport_len = 127;
+				};
 			})
 			.exec_async()
 			.await?;
@@ -300,22 +301,22 @@ impl LuaRouter {
 		let (addresses, config) = {
 			info!("[lua] running configuration");
 			let ret: Function = lua.load(chunk! { internal() }).eval_async().await?;
-			let path = path.as_ref().as_os_str().to_string_lossy();
+			let mut path: PathBuf = path.into();
+			path.push("main.lua");
+			let path = path.as_os_str().to_string_lossy();
 			lua.load(chunk! {
 				_G.__module_path = $path
 				require("main.lua")
 			})
 			.exec_async()
 			.await?;
-			// lua.load(&LuaFile::new(path.as_ref())?).exec_async().await?;
 			info!("[lua] acquiring results");
-			let (ret1, ret2) = (ret.clone(), ret.clone());
 			let max_subport_len: usize = lua
-				.load(chunk! { $ret1()[$G_MAX_SUBPORT_LENGTH] })
+				.load(chunk! { _G.config.max_subport_len })
 				.eval_async()
 				.await?;
 			let registry: Registry = lua
-				.load(chunk! { $ret2()[$G_REGISTRY] })
+				.load(chunk! { $ret()[$G_REGISTRY] })
 				.eval_async()
 				.await?;
 			let addresses = {
@@ -351,6 +352,7 @@ impl Router for LuaRouter {
 		let Address { addr, port } = address;
 		let addr = addr.unwrap_or_default();
 		let subport = subport.unwrap_or_default();
+		trace!("[lua] resolving {}:{}!{}", addr, port, subport);
 		resolve_result_from_lua(
 			self.lua
 				.load(chunk! { resolve($addr, $port, $subport) })

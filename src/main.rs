@@ -11,7 +11,7 @@ async fn main() {
 		.filter_level(LevelFilter::Trace)
 		.init();
 	if let Err(e) = server::run(
-		routers::lua::LuaRouter::new("connfig/main.lua")
+		routers::lua::LuaRouter::new("config")
 			.await
 			.unwrap(),
 	)
