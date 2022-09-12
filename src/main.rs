@@ -1,22 +1,18 @@
-#![feature(async_closure, try_blocks)]
+use log::{error, info};
 
-use log::LevelFilter;
-
-pub mod routers;
-pub mod server;
+mod common;
+mod net;
+mod routers;
 
 #[tokio::main]
 async fn main() {
 	env_logger::builder()
-		.filter_level(LevelFilter::Trace)
+		.filter_level(log::LevelFilter::Trace)
 		.init();
-	if let Err(e) = server::run(
-		routers::lua::LuaRouter::new("config")
-			.await
-			.unwrap(),
-	)
-	.await
-	{
-		e.print();
+	info!("starting connpipe v{}", env!("CARGO_PKG_VERSION"));
+	if let Err(e) = net::run().await {
+		e.error();
+		error!("fatal error, exiting...");
 	}
+	info!("exiting");
 }

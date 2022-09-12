@@ -1,11 +1,11 @@
 [package]
-name = "connpipe"
 version = "0.1.0"
+name = "connpipe"
 edition = "2021"
 authors = ["1e1001"]
 
 [dependencies.mlua]
-version = "0.7.4"
+version = "0.8.3"
 features = ["lua54", "vendored", "async", "macros"]
 
 [dependencies.tokio]
@@ -21,8 +21,16 @@ version = "0.9.0"
 [dependencies.thiserror]
 version = "1.0"
 
-[dependencies.futures]
-version = "0.3.21"
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.toml]
+version = "0.5.9"
 
 [dependencies.async-trait]
 version = "0.1.53"
+
+[dependencies.notify]
+version = "=5.0.0-pre.15"
+features = ["macos_fsevent"]
