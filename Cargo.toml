@@ -34,3 +34,6 @@ version = "0.1.53"
 [dependencies.notify]
 version = "=5.0.0-pre.15"
 features = ["macos_fsevent"]
+
+[dependencies.ctrlc]
+version = "3.2"

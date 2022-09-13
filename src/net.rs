@@ -94,6 +94,12 @@ impl StopSignals {
 pub async fn run() -> CResult<()> {
 	let config_path: &Path = Path::new("./config/");
 	let (root_tx, mut root_rx) = mpsc::channel(128);
+	trace!("registering interrupt handle");
+	let root_tx_int = root_tx.clone();
+	ctrlc::set_handler(move || {
+		trace!("caught interrupt");
+		root_tx_int.blocking_send(RootEvent::Exit);
+	});
 	let mut watcher = notify::recommended_watcher(NotifyHandler(root_tx.clone())).unwrap();
 	watcher
 		.watch(config_path, notify::RecursiveMode::Recursive)
