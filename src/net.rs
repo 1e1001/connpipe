@@ -11,6 +11,7 @@ use crate::common::{
 use crate::routers::load_config;
 use log::{info, trace, warn};
 use notify::Watcher;
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
@@ -98,8 +99,9 @@ pub async fn run() -> CResult<()> {
 	let root_tx_int = root_tx.clone();
 	ctrlc::set_handler(move || {
 		trace!("caught interrupt");
-		root_tx_int.blocking_send(RootEvent::Exit);
-	});
+		root_tx_int.blocking_send(RootEvent::Exit).unwrap();
+	})
+	.expect("failed to set interrupt handler");
 	let mut watcher = notify::recommended_watcher(NotifyHandler(root_tx.clone())).unwrap();
 	watcher
 		.watch(config_path, notify::RecursiveMode::Recursive)
@@ -246,8 +248,20 @@ async fn on_stop_signal<T>(
 	id: TaskId,
 	stop_signal: &mut StopSignalReceiver,
 	root_tx: &mpsc::Sender<RootEvent>,
-) -> CResult<ControlFlow<(), T>> {
+	res: T,
+) -> CResult<T> {
 	stop_signal.await?;
 	root_tx.send(RootEvent::StopSignalComplete(id)).await?;
-	Ok(ControlFlow::Break(()))
+	Ok(res)
+}
+
+async fn on_read<'a>(buf: &'a mut [u8], stream: &'a mut TcpStream) -> CResult<usize> {
+	Ok(stream.read(buf).await?)
+}
+
+async fn future_or2<T>(a: impl Future<Output = T>, b: impl Future<Output = T>) ->  {
+	select! {
+		r = a => r,
+		r = b => r,
+	}
 }
