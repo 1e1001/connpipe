@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::path::Path;
 
 use log::{info, trace};
@@ -10,15 +11,25 @@ use crate::common::{CError, CResult, RouterDyn, RouterEnv};
 macro_rules! define_routers {
 	($($type_name:tt $string_name:tt $mod_name:tt),*$(,)?) => {
 		$(mod $mod_name;)*
-		#[derive(Debug)]
-		enum RouterType {
-			$($type_name),*
+		#[derive(Debug, Clone, Copy)]
+		#[non_exhaustive]
+		pub enum RouterType {
+			$($type_name,)*
+		}
+		pub trait RouterAuto {
+			fn router_type(&self) -> RouterType;
+			fn dirty_flag(&mut self) -> bool;
 		}
 		impl RouterType {
-			fn from_str(s: &str) -> CResult<Self> {
+			pub fn from_str(s: &str) -> CResult<Self> {
 				match s {
 					$($string_name => Ok(RouterType::$type_name),)*
 					s => Err(CError::InvalidRouterType(s.to_string()))
+				}
+			}
+			pub fn to_str(&self) -> &'static str {
+				match self {
+					$(RouterType::$type_name => $string_name),*
 				}
 			}
 			async fn create(&self, config: toml::Value, env: &RouterEnv) -> CResult<RouterDyn> {
@@ -27,6 +38,21 @@ macro_rules! define_routers {
 				}
 			}
 		}
+		impl fmt::Display for RouterType {
+			fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+				f.write_str(self.to_str())
+			}
+		}
+		$(impl RouterAuto for $mod_name::Router {
+			fn router_type(&self) -> RouterType {
+				RouterType::$type_name
+			}
+			fn dirty_flag(&mut self) -> bool {
+				let old_val = self.dirty;
+				self.dirty = false;
+				return old_val;
+			}
+		})*
 	}
 }
 
@@ -42,7 +68,7 @@ struct ConfigData {
 }
 
 pub async fn load_config(path: &Path, env: &mut RouterEnv) -> CResult<()> {
-	env.clear_routers();
+	env.reset().await;
 	info!("loading configuration...");
 	// open {path}/config.toml
 	let config_path = path.join("config.toml");

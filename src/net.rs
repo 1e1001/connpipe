@@ -5,11 +5,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::common::{
-	task_counter, Address, AddressSubport, CError, CResult, PipeError, RouterEnv, TaskId,
+	task_counter, Address, AddressSubport, CError, CResult, PipeError, RouterEnv, RouterSharedEnv, TaskId,
 	TaskIdType,
 };
 use crate::def;
-use crate::routers::load_config;
 use log::{info, trace, warn};
 use notify::Watcher;
 use tokio::io::{AsyncReadExt, BufReader};
@@ -122,6 +121,7 @@ pub async fn run() -> CResult<()> {
 	loop {
 		let mut files_changed = 0;
 		let mut stop_signals = StopSignals::new();
+		// TODO: seperate config loading and startup
 		if let Err(e) = try_load_config(config_path, &mut env, root_tx.clone()).await {
 			warn!("error loading configuration:");
 			e.warn();
@@ -198,7 +198,7 @@ async fn try_load_config(
 	env: &mut RouterEnv,
 	root_tx: mpsc::Sender<RootEvent>,
 ) -> CResult<()> {
-	load_config(config_path, env).await?;
+	crate::routers::load_config(config_path, env).await?;
 	let listen_addresses = env.listen_addresses().await?;
 	trace!("bind: {:?}", listen_addresses);
 	for addr in listen_addresses {
@@ -207,7 +207,7 @@ async fn try_load_config(
 		safe_task(
 			id,
 			root_tx.clone(),
-			conn_loop(id, signal, root_tx.clone(), addr),
+			conn_loop(id, signal, root_tx.clone(), env.shared.clone(), addr),
 		);
 	}
 	Ok(())
@@ -217,6 +217,7 @@ async fn conn_loop(
 	id: TaskId,
 	mut stop_signal: StopSignalReceiver,
 	root_tx: mpsc::Sender<RootEvent>,
+	shared: RouterSharedEnv,
 	addr: Address,
 ) -> CResult<()> {
 	let listener = TcpListener::bind(addr.to_socket()?).await?;
@@ -227,7 +228,7 @@ async fn conn_loop(
 				let (tcp_stream, socket_addr) = req?;
 				let id = task_counter(TaskIdType::Pipe).await;
 				let signal = add_signal(id, &root_tx).await?;
-				safe_task(id, root_tx.clone(), pipe_loop(id, signal, root_tx.clone(), BufReader::new(tcp_stream), socket_addr));
+				safe_task(id, root_tx.clone(), pipe_loop(id, signal, root_tx.clone(), shared.clone(), BufReader::new(tcp_stream), socket_addr));
 			},
 			res = on_stop_signal(id, &mut stop_signal) => {
 				res?;
@@ -242,6 +243,7 @@ async fn pipe_loop(
 	id: TaskId,
 	mut stop_signal: StopSignalReceiver,
 	root_tx: mpsc::Sender<RootEvent>,
+	shared: RouterSharedEnv,
 	mut tcp_stream: BufferedTcp,
 	socket_addr: SocketAddr,
 ) -> CResult<()> {
@@ -261,7 +263,6 @@ async fn pipe_loop(
 	}
 	// read
 	let mut magic_buf = [0u8; 16];
-	let mut magic_mask = [0u8; 16];
 	let mut total = 0usize;
 	let mut valid = true;
 	while total < 16 {
@@ -270,10 +271,9 @@ async fn pipe_loop(
 			valid = false;
 			break;
 		}
-		magic_mask[total..total + n].fill(0xff);
 		total += n;
 		// cancel as early as possible
-		if u128::from_ne_bytes(magic_buf) != def::MAGIC & u128::from_ne_bytes(magic_mask) {
+		if magic_buf != def::MAGIC {
 			valid = false;
 			break;
 		}
@@ -285,15 +285,19 @@ async fn pipe_loop(
 		const MAX_REMAINDER: u32 = 8 - usize::BITS % 7;
 		let mut out = 0usize;
 		let mut read_bits = 0;
+		// read length only once to reduce lock time, and prevent over-reading before the length is lowered
+		let max_config_length = shared.read().await.config.max_subport_len;
 		for i in 0..MAX_BYTES {
 			let byte = tcp_stream.read_u8().await?;
+			// throw SubportTooLong here since the only tiem this can happen is if the length is more than usize::MAX
+			// TODO: throw on trailing zeros
 			if i == MAX_BYTES - 1 && byte.leading_zeros() < MAX_REMAINDER {
-				return Err(CError::Pipe(id, PipeError::SubportTooLong));
-			} else if i == 0 && byte == 0x80 {
 				return Err(CError::Pipe(id, PipeError::SubportTooLong));
 			}
 			out |= usize::from(byte) << read_bits;
-			if out >
+			if out > max_config_len {
+				return Err(CError::Pipe(id, PipeError::SubportTooLong));
+			}
 			read_bits += 7;
 		}
 		None

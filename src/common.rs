@@ -1,13 +1,13 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::{fmt, io};
 
+use crate::routers::{RouterAuto, RouterType};
 use async_trait::async_trait;
 use log::{debug, error, trace, warn};
-use tokio::select;
 use tokio::sync::RwLock;
 
 #[derive(thiserror::Error, Debug)]
@@ -30,9 +30,9 @@ pub enum InvalidAddrError {
 
 #[derive(thiserror::Error, Debug)]
 pub enum PipeError {
-	#[error("subport too long")]
+	#[error("bad header: subport too long")]
 	SubportTooLong,
-	#[error("unexpected '0+' byte at start of input")]
+	#[error("bad header: unexpected '0+' byte at start of subport length")]
 	SubportInvalidStart,
 }
 
@@ -58,12 +58,14 @@ pub enum CError {
 	InvalidAddr(String, InvalidAddrError),
 	#[error("host {0:?} is invalid")]
 	InvalidHost(String),
-	#[error("[{0}] {1}")]
-	RouterError(&'static str, String),
+	#[error("[{0}/{1}] {1}")]
+	RouterError(&'static str, String, String),
 	#[error("connection error: {0} {1}")]
 	Pipe(TaskId, PipeError),
 	#[error("recursed too deep")]
 	RecursionError,
+	#[error("router with id {0:?} does not exist")]
+	InvalidRouter(String),
 	#[error("stop signals timed out")]
 	StopSignalTimeout,
 	#[error("uncaught task-stop signal")]
@@ -438,12 +440,14 @@ macro_rules! router_config {
 		pub struct RouterConfig {
 			$(#[doc = $doc] pub $opt: $ty),*
 		}
-		pub mod router_config {
-			// todo here?
-		}
 		impl Default for RouterConfig {
 			fn default() -> Self {
 				Self { $($opt: $val),* }
+			}
+		}
+		impl RouterConfig {
+			fn reset(&mut self) {
+				$(self.$opt = $val;)*
 			}
 		}
 	};
@@ -456,43 +460,27 @@ router_config! {
 	max_recursion: usize = 128,
 }
 
-#[derive(Debug)]
-pub struct RouterCommon {
-	pub dirty: bool,
-}
-
-impl Default for RouterCommon {
-	fn default() -> Self {
-		Self { dirty: true }
-	}
-}
-
-impl RouterCommon {
-	pub fn is_dirty(&mut self) -> bool {
-		let old_val = self.dirty;
-		self.dirty = false;
-		return old_val;
-	}
-}
-
 #[async_trait(?Send)]
-pub trait RouterInst: fmt::Debug {
+pub trait RouterInst: RouterAuto + fmt::Debug {
 	/// translate an address
-	async fn route(&self, addr: AddressSubport, env: &RouterEnv)
-		-> CResult<Option<AddressSubport>>;
+	async fn route(&self, addr: AddressSubport, env: &RouterEnv) -> CResult<Option<AddressSubport>>;
 	/// get the list of addresses to bind to
 	async fn listen_addresses(&self) -> CResult<Vec<Address>>;
-	/// return true if the configuration changed since the last time this function was called
-	async fn is_dirty(&mut self) -> bool;
+}
+
+pub struct RouterSharedInner {
+	pub config: RouterConfig,
 }
 
 pub type RouterDyn = Box<dyn RouterInst>;
+pub type RouterSharedEnv = Arc<RwLock<RouterSharedInner>>;
 
 pub struct RouterEnv {
 	path: PathBuf,
-	pub config: RouterConfig,
+	pub shared: RouterSharedEnv,
 	routers: HashMap<String, RouterDyn>,
 	current_depth: Cell<usize>,
+	current_router: RefCell<(Option<RouterType>, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -528,17 +516,23 @@ impl RouterEnv {
 	pub fn new(path: PathBuf) -> Self {
 		Self {
 			path,
-			config: Default::default(),
+			shared: Arc::new(RwLock::new(RouterSharedInner {
+				config: Default::default(),
+			})),
 			routers: HashMap::new(),
 			current_depth: Cell::new(0),
+			current_router: RefCell::new((None, "none".to_string()))
 		}
 	}
 	pub fn path(&self) -> &Path {
 		&self.path
 	}
-	pub fn clear_routers(&mut self) {
-		trace!("clearing routers");
+	pub async fn reset(&mut self) {
+		trace!("resetting environment");
 		self.routers.clear();
+		self.shared.write().await.config.reset();
+		self.current_depth.set(0);
+		*self.current_router.borrow_mut() = (None, "none".to_string());
 	}
 	pub fn set_routers(&mut self, map: HashMap<String, RouterDyn>) {
 		trace!("new routers loaded");
@@ -555,15 +549,23 @@ impl RouterEnv {
 		self.current_depth.set(0);
 		self.route("main", addr).await
 	}
+	pub fn router_err(&self, message: String) -> CError {
+		let lock = self.current_router.borrow();
+		CError::RouterError(lock.0.as_ref().map_or("??", RouterType::to_str), lock.1.clone(), message)
+	}
 	pub async fn route(&self, id: &str, addr: AddressSubport) -> CResult<Option<AddressSubport>> {
 		trace!("routing {addr} with {id:?}");
-		if self.current_depth.get() <= self.config.max_recursion {
+		if self.current_depth.get() <= self.shared.read().await.config.max_recursion {
 			self.current_depth.set(self.current_depth.get() + 1);
-			self.routers
+			let router = self.routers
 				.get(id)
-				.ok_or(CError::RecursionError)?
+				.ok_or_else(|| CError::InvalidRouter(id.to_string()))?;
+			let old_router_info = self.current_router.replace((Some(router.router_type()), id.to_string()));
+			let res = router
 				.route(addr, self)
-				.await
+				.await;
+			* self.current_router.borrow_mut() = old_router_info;
+			res
 		} else {
 			Err(CError::RecursionError)
 		}

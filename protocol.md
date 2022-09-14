@@ -17,6 +17,6 @@ if `00000000` or `10000000` are read then cancel connection
 
 if value is ever more than `maximum_name_length` then cancel connection
 
-`subport` = `subport-len` bytes
+`subport` = `subport-len` + 1 bytes
 
 as of right now it has to always be valid UTF-8.
