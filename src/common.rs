@@ -29,6 +29,12 @@ pub enum InvalidAddrError {
 }
 
 #[derive(thiserror::Error, Debug)]
+pub enum PipeError {
+	#[error("subport too long")]
+	SubportTooLong,
+}
+
+#[derive(thiserror::Error, Debug)]
 pub enum CError {
 	#[error("lua error:\n{0}")]
 	LuaError(#[from] mlua::Error),
@@ -52,10 +58,14 @@ pub enum CError {
 	InvalidHost(String),
 	#[error("[{0}] {1}")]
 	RouterError(&'static str, String),
+	#[error("connection error: {0} {1}")]
+	Pipe(TaskId, PipeError),
 	#[error("recursed too deep")]
 	RecursionError,
 	#[error("stop signals timed out")]
 	StopSignalTimeout,
+	#[error("uncaught task-stop signal")]
+	TaskStop,
 	#[error("todo!")]
 	TodoError,
 }
@@ -189,20 +199,20 @@ impl fmt::Debug for Hostname {
 					}
 				}
 				if max_span_len == 0 {
-					write!(f, "[{}", addr[0])?;
+					write!(f, "[{:x}", addr[0])?;
 					for part in &addr[1..] {
-						write!(f, ":{part}")?;
+						write!(f, ":{part:x}")?;
 					}
 				} else {
 					write!(f, "[")?;
 					for part in &addr[0..max_span_start] {
-						write!(f, "{part}:")?;
+						write!(f, "{part:x}:")?;
 					}
 					if max_span_start == 0 {
 						write!(f, ":")?;
 					}
 					for part in &addr[max_span_start + max_span_len..] {
-						write!(f, ":{part}")?;
+						write!(f, ":{part:x}")?;
 					}
 					if max_span_len == 8 {
 						write!(f, ":")?;
@@ -317,14 +327,15 @@ fn address_from_str(s: &str, partial: bool) -> CResult<AddressPartial> {
 							_ => return Err(make_host_err()),
 						};
 					let parse_ipv6_unit = |part: &str| {
-						if part.len() != 4 {
+						if !(1..=4).contains(&part.len()) {
 							return Err(make_host_err());
 						}
-						let bytes = part.as_bytes();
-						Ok((parse_hex(bytes[0], host)? as u16) << 12
-							| (parse_hex(bytes[1], host)? as u16) << 8
-							| (parse_hex(bytes[2], host)? as u16) << 4
-							| parse_hex(bytes[3], host)? as u16)
+						let mut res = 0u16;
+						for byte in part.as_bytes() {
+							res <<= 4;
+							res |= u16::from(parse_hex(*byte, host)?);
+						}
+						Ok(res)
 					};
 					if head.len() > 0 {
 						let head_parts: Vec<_> = head.split(':').collect();

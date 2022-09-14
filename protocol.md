@@ -13,6 +13,7 @@ on connection:
 - `0xxxxxxx` - push bits `xxxxxxx` and end reading
 
 if more than `usize::BITS` bits are read then cancel connection
+if `00000000` or `10000000` are read then cancel connection
 
 if value is ever more than `maximum_name_length` then cancel connection
 

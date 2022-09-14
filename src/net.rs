@@ -1,17 +1,17 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::ops::ControlFlow;
 use std::path::Path;
 use std::time::Duration;
 
 use crate::common::{
-	task_counter, Address, AddressSubport, CError, CResult, RouterEnv, TaskId, TaskIdType,
+	task_counter, Address, AddressSubport, CError, CResult, PipeError, RouterEnv, TaskId, TaskIdType,
 };
+use crate::def;
 use crate::routers::load_config;
 use log::{info, trace, warn};
 use notify::Watcher;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
@@ -27,7 +27,7 @@ pub enum RootEvent {
 		oneshot::Sender<CResult<Option<AddressSubport>>>,
 	),
 	RegisterStopSignal(TaskId, StopSignalSender),
-	StopSignalComplete(TaskId),
+	TaskStopped(TaskId),
 	Poll,
 	Exit,
 }
@@ -52,6 +52,7 @@ impl notify::EventHandler for NotifyHandler {
 
 type StopSignalSender = oneshot::Sender<()>;
 type StopSignalReceiver = oneshot::Receiver<()>;
+type BufferedTcp = BufReader<TcpStream>;
 
 struct StopSignals(Vec<(TaskId, StopSignalSender)>);
 
@@ -73,9 +74,9 @@ impl StopSignals {
 			}
 		}
 		let mut timeout_counter = 10u8;
-		while wait_for.len() > 0 {
+		while !wait_for.is_empty() {
 			match rx.recv().await.unwrap() {
-				RootEvent::StopSignalComplete(id) => {
+				RootEvent::TaskStopped(id) => {
 					info!("{id} competed!");
 					wait_for.remove(&id);
 				}
@@ -98,6 +99,7 @@ pub async fn run() -> CResult<()> {
 	trace!("registering interrupt handle");
 	let root_tx_int = root_tx.clone();
 	ctrlc::set_handler(move || {
+		println!();
 		trace!("caught interrupt");
 		root_tx_int.blocking_send(RootEvent::Exit).unwrap();
 	})
@@ -147,12 +149,12 @@ pub async fn run() -> CResult<()> {
 				}
 				RootEvent::Route(id, addr, res) => {
 					trace!("{id} requested route for {addr}");
-					if let Err(_) = res.send(env.start_route(addr).await) {
+					if res.send(env.start_route(addr).await).is_err() {
 						warn!("{id} route request disconnect!");
 					}
 				}
 				RootEvent::Exit => break true,
-				RootEvent::StopSignalComplete(id) => warn!("{id} stopped before signal sent out"),
+				RootEvent::TaskStopped(id) => warn!("{id} stopped before signal emitted"),
 			}
 		};
 		info!("waiting for all tasks to end");
@@ -172,16 +174,21 @@ async fn add_signal(id: TaskId, root_tx: &mpsc::Sender<RootEvent>) -> CResult<St
 	Ok(rx)
 }
 
-fn safe_task<R, T: Future<Output = CResult<R>> + Send + 'static>(id: TaskId, task: T) {
+fn safe_task<R, T: Future<Output = CResult<R>> + Send + 'static>(
+	id: TaskId,
+	root_tx: mpsc::Sender<RootEvent>,
+	task: T,
+) {
 	tokio::spawn(async move {
 		info!("{id} spawn task");
 		match task.await {
+			Ok(_) | Err(CError::TaskStop) => trace!("{id} task finished"),
 			Err(e) => {
 				warn!("{id} error in task");
 				e.warn();
 			}
-			Ok(_) => trace!("{id} task finished"),
 		}
+		root_tx.send(RootEvent::TaskStopped(id)).await.unwrap();
 	});
 }
 
@@ -196,7 +203,11 @@ async fn try_load_config(
 	for addr in listen_addresses {
 		let id = task_counter(TaskIdType::Conn).await;
 		let signal = add_signal(id, &root_tx).await?;
-		safe_task(id, conn_loop(id, signal, root_tx.clone(), addr));
+		safe_task(
+			id,
+			root_tx.clone(),
+			conn_loop(id, signal, root_tx.clone(), addr),
+		);
 	}
 	Ok(())
 }
@@ -215,9 +226,9 @@ async fn conn_loop(
 				let (tcp_stream, socket_addr) = req?;
 				let id = task_counter(TaskIdType::Pipe).await;
 				let signal = add_signal(id, &root_tx).await?;
-				safe_task(id, pipe_loop(id, signal, root_tx.clone(), tcp_stream, socket_addr));
+				safe_task(id, root_tx.clone(), pipe_loop(id, signal, root_tx.clone(), tcp_stream, socket_addr));
 			},
-			res = on_stop_signal::<()>(id, &mut stop_signal, &root_tx) => {
+			res = on_stop_signal(id, &mut stop_signal) => {
 				res?;
 				break;
 			}
@@ -230,12 +241,71 @@ async fn pipe_loop(
 	id: TaskId,
 	mut stop_signal: StopSignalReceiver,
 	root_tx: mpsc::Sender<RootEvent>,
-	tcp_stream: TcpStream,
+	mut tcp_stream: TcpStream,
 	socket_addr: SocketAddr,
 ) -> CResult<()> {
+	macro_rules! stream_read {
+		($buf:expr) => {
+			select! {
+				res = tcp_stream.read($buf) => Ok(res?),
+				res = on_stop_signal(id, &mut stop_signal) => {
+					res?;
+					Err(CError::TaskStop)
+				}
+				_ = tokio::time::sleep(def::SUBPORT_READ_TIMEOUT) => {
+					Ok(0)
+				}
+			}
+		}
+	}
+	// read
+	let mut magic_buf = [0u8; 16];
+	let mut magic_mask = [0u8; 16];
+	let mut total = 0usize;
+	let mut valid = true;
+	while total < 16 {
+		let n = stream_read!(&mut magic_buf[total..])?;
+		if n == 0 {
+			valid = false;
+			break;
+		}
+		magic_mask[total..total+n].fill(0xff);
+		total += n;
+		// cancel as early as possible
+		if u128::from_ne_bytes(magic_buf) != def::MAGIC & u128::from_ne_bytes(magic_mask) {
+			valid = false;
+			break;
+		}
+	}
+	trace!("{id} magic: {:02x?}", &magic_buf[0..total]);
+	let subport = if valid {
+		trace!("{id} magic found, reading subport");
+		const MAX_BYTES: u32 = (usize::BITS + 6) / 7;
+		const MAX_REMAINDER: u32 = 8 - usize::BITS % 7;
+		let mut out = 0usize;
+		let mut read_bits = 0;
+		for i in 0..MAX_BYTES {
+			let byte = tcp_stream.read_u8().await?;
+			if i == MAX_BYTES - 1 && byte.leading_zeros() < MAX_REMAINDER {
+				// drop connection
+				return Err(CError::Pipe(id, PipeError::SubportTooLong));
+			}
+			out |= usize::from(byte); // todo here
+			read_bits += 7;
+		}
+		None
+	} else {
+		None
+	};
+	todo!("read");
+	// route
+	todo!("route");
+	// connect
+	todo!("connect");
+	// pipe
 	loop {
 		select! {
-			res = on_stop_signal::<()>(id, &mut stop_signal, &root_tx) => {
+			res = on_stop_signal(id, &mut stop_signal) => {
 				res?;
 				break;
 			}
@@ -244,24 +314,11 @@ async fn pipe_loop(
 	Ok(())
 }
 
-async fn on_stop_signal<T>(
+async fn on_stop_signal(
 	id: TaskId,
 	stop_signal: &mut StopSignalReceiver,
-	root_tx: &mpsc::Sender<RootEvent>,
-	res: T,
-) -> CResult<T> {
+) -> CResult<()> {
 	stop_signal.await?;
-	root_tx.send(RootEvent::StopSignalComplete(id)).await?;
-	Ok(res)
-}
-
-async fn on_read<'a>(buf: &'a mut [u8], stream: &'a mut TcpStream) -> CResult<usize> {
-	Ok(stream.read(buf).await?)
-}
-
-async fn future_or2<T>(a: impl Future<Output = T>, b: impl Future<Output = T>) ->  {
-	select! {
-		r = a => r,
-		r = b => r,
-	}
+	trace!("{id} got stop signal");
+	Ok(())
 }
