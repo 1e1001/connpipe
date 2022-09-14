@@ -9,8 +9,8 @@ on connection:
 
 `subport-len` = base 128 Varint in little endian
 
-- `1xxxxxxx` - push bits `xxxxxxx` and read one more byte
-- `0xxxxxxx` - push bits `xxxxxxx` and end reading
+- `1xxxxxxx` / `x+` - push bits `xxxxxxx` and read one more byte
+- `0xxxxxxx` / `x.` - push bits `xxxxxxx` and end reading
 
 if more than `usize::BITS` bits are read then cancel connection
 if `00000000` or `10000000` are read then cancel connection

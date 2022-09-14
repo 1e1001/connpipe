@@ -5,7 +5,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::common::{
-	task_counter, Address, AddressSubport, CError, CResult, PipeError, RouterEnv, TaskId, TaskIdType,
+	task_counter, Address, AddressSubport, CError, CResult, PipeError, RouterEnv, TaskId,
+	TaskIdType,
 };
 use crate::def;
 use crate::routers::load_config;
@@ -226,7 +227,7 @@ async fn conn_loop(
 				let (tcp_stream, socket_addr) = req?;
 				let id = task_counter(TaskIdType::Pipe).await;
 				let signal = add_signal(id, &root_tx).await?;
-				safe_task(id, root_tx.clone(), pipe_loop(id, signal, root_tx.clone(), tcp_stream, socket_addr));
+				safe_task(id, root_tx.clone(), pipe_loop(id, signal, root_tx.clone(), BufReader::new(tcp_stream), socket_addr));
 			},
 			res = on_stop_signal(id, &mut stop_signal) => {
 				res?;
@@ -241,7 +242,7 @@ async fn pipe_loop(
 	id: TaskId,
 	mut stop_signal: StopSignalReceiver,
 	root_tx: mpsc::Sender<RootEvent>,
-	mut tcp_stream: TcpStream,
+	mut tcp_stream: BufferedTcp,
 	socket_addr: SocketAddr,
 ) -> CResult<()> {
 	macro_rules! stream_read {
@@ -256,7 +257,7 @@ async fn pipe_loop(
 					Ok(0)
 				}
 			}
-		}
+		};
 	}
 	// read
 	let mut magic_buf = [0u8; 16];
@@ -269,7 +270,7 @@ async fn pipe_loop(
 			valid = false;
 			break;
 		}
-		magic_mask[total..total+n].fill(0xff);
+		magic_mask[total..total + n].fill(0xff);
 		total += n;
 		// cancel as early as possible
 		if u128::from_ne_bytes(magic_buf) != def::MAGIC & u128::from_ne_bytes(magic_mask) {
@@ -287,10 +288,12 @@ async fn pipe_loop(
 		for i in 0..MAX_BYTES {
 			let byte = tcp_stream.read_u8().await?;
 			if i == MAX_BYTES - 1 && byte.leading_zeros() < MAX_REMAINDER {
-				// drop connection
+				return Err(CError::Pipe(id, PipeError::SubportTooLong));
+			} else if i == 0 && byte == 0x80 {
 				return Err(CError::Pipe(id, PipeError::SubportTooLong));
 			}
-			out |= usize::from(byte); // todo here
+			out |= usize::from(byte) << read_bits;
+			if out >
 			read_bits += 7;
 		}
 		None
@@ -314,10 +317,7 @@ async fn pipe_loop(
 	Ok(())
 }
 
-async fn on_stop_signal(
-	id: TaskId,
-	stop_signal: &mut StopSignalReceiver,
-) -> CResult<()> {
+async fn on_stop_signal(id: TaskId, stop_signal: &mut StopSignalReceiver) -> CResult<()> {
 	stop_signal.await?;
 	trace!("{id} got stop signal");
 	Ok(())

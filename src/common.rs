@@ -32,6 +32,8 @@ pub enum InvalidAddrError {
 pub enum PipeError {
 	#[error("subport too long")]
 	SubportTooLong,
+	#[error("unexpected '0+' byte at start of input")]
+	SubportInvalidStart,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -429,22 +431,29 @@ fn address_from_str(s: &str, partial: bool) -> CResult<AddressPartial> {
 	})
 }
 
-#[non_exhaustive]
-#[derive(Clone, Debug)]
-pub struct RouterConfig {
-	/// maximum subport length before incoming connections are cancelled, does not affect outgoing connections
-	pub max_subport_len: usize,
-	/// maximum depth for recursion before exiting
-	pub max_recursion: usize,
+macro_rules! router_config {
+	($(#[doc = $doc:expr] $opt:ident: $ty:ty = $val:expr),*$(,)?) => {
+		#[non_exhaustive]
+		#[derive(Clone, Debug)]
+		pub struct RouterConfig {
+			$(#[doc = $doc] pub $opt: $ty),*
+		}
+		pub mod router_config {
+			// todo here?
+		}
+		impl Default for RouterConfig {
+			fn default() -> Self {
+				Self { $($opt: $val),* }
+			}
+		}
+	};
 }
 
-impl Default for RouterConfig {
-	fn default() -> Self {
-		Self {
-			max_subport_len: 128,
-			max_recursion: 128,
-		}
-	}
+router_config! {
+	/// maximum subport length before incoming connections are cancelled, does not affect outgoing connections
+	max_subport_len: usize = 128,
+	/// maximum depth for recursion before exiting
+	max_recursion: usize = 128,
 }
 
 #[derive(Debug)]
