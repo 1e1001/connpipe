@@ -32,8 +32,10 @@ pub enum InvalidAddrError {
 pub enum PipeError {
 	#[error("bad header: subport too long")]
 	SubportTooLong,
-	#[error("bad header: unexpected '0+' byte at start of subport length")]
-	SubportInvalidStart,
+	#[error("bad header: unexpected '0.' septet at tail of subport length")]
+	SubportZeroTail,
+	#[error("connection closed early")]
+	EarlyClose,
 }
 
 #[derive(thiserror::Error, Debug)]

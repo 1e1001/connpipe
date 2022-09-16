@@ -1,16 +1,25 @@
 [package]
 version = "0.1.0"
 name = "connpipe"
+description = "tcp connection forwarder / multiplexer"
 edition = "2021"
 authors = ["1e1001"]
+
+[workspace]
+members = [
+	"bytestr"
+]
+
+[dependencies.bytestr]
+path = "bytestr/"
 
 [dependencies.mlua]
 version = "0.8.3"
 features = ["lua54", "vendored", "async", "macros"]
 
 [dependencies.tokio]
-version = "1.18"
-features = ["full"]
+version = "1.20"
+features = ["fs", "io-util", "macros", "net", "parking_lot", "rt-multi-thread", "sync", "time"]
 
 [dependencies.log]
 version = "0.4.17"

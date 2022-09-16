@@ -283,22 +283,36 @@ async fn pipe_loop(
 		trace!("{id} magic found, reading subport");
 		const MAX_BYTES: u32 = (usize::BITS + 6) / 7;
 		const MAX_REMAINDER: u32 = 8 - usize::BITS % 7;
-		let mut out = 0usize;
+		let mut read_len = 0usize;
 		let mut read_bits = 0;
 		// read length only once to reduce lock time, and prevent over-reading before the length is lowered
-		let max_config_length = shared.read().await.config.max_subport_len;
+		let max_config_len = shared.read().await.config.max_subport_len;
 		for i in 0..MAX_BYTES {
 			let byte = tcp_stream.read_u8().await?;
 			// throw SubportTooLong here since the only tiem this can happen is if the length is more than usize::MAX
-			// TODO: throw on trailing zeros
 			if i == MAX_BYTES - 1 && byte.leading_zeros() < MAX_REMAINDER {
 				return Err(CError::Pipe(id, PipeError::SubportTooLong));
+			} else if byte == 0 && i > 0 {
+				return Err(CError::Pipe(id, PipeError::SubportZeroTail));
 			}
-			out |= usize::from(byte) << read_bits;
-			if out > max_config_len {
+			read_len |= usize::from(byte & 0x7F) << read_bits;
+			if read_len > max_config_len {
 				return Err(CError::Pipe(id, PipeError::SubportTooLong));
 			}
+			if byte & 0x80 == 0 {
+				break;
+			}
 			read_bits += 7;
+		}
+		trace!("{id} subport is {read_len} byte{} long", if read_len == 1 {""} else {"s"});
+		let mut subport_buf = vec![0; read_len];
+		let mut subport_read = 0;
+		while subport_read < read_len {
+			let n = stream_read!(&mut subport_buf[subport_read..])?;
+			if n == 0 {
+				return Err(CError::Pipe(id, PipeError::EarlyClose));
+			}
+			subport_read += n;
 		}
 		None
 	} else {
