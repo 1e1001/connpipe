@@ -1,10 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use async_trait::async_trait;
-
-use crate::common::{
-	Address, AddressPartial, AddressSubport, CResult, RouterEnv, RouterInst,
-};
+use crate::common::{Address, AddressPartial, AddressSubport, CResult, RouterEnv};
 
 pub type Config = HashMap<String, String>;
 
@@ -44,11 +40,7 @@ impl Router {
 			data,
 		})
 	}
-}
-
-#[async_trait(?Send)]
-impl RouterInst for Router {
-	async fn route(
+	pub async fn route(
 		&self,
 		addr: AddressSubport,
 		env: &RouterEnv,
@@ -59,11 +51,14 @@ impl RouterInst for Router {
 			None => None,
 		})
 	}
-	async fn listen_addresses(&self) -> CResult<Vec<Address>> {
+	pub async fn listen_addresses(&self) -> CResult<Vec<Address>> {
 		let mut out = HashSet::new();
 		for addr in self.data.keys() {
 			out.insert(addr.clone().pure_part());
 		}
 		Ok(out.into_iter().collect())
+	}
+	pub async fn close(&mut self) -> CResult<()> {
+		Ok(())
 	}
 }

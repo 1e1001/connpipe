@@ -18,8 +18,8 @@ version = "0.8.3"
 features = ["lua54", "vendored", "async", "macros"]
 
 [dependencies.tokio]
-version = "1.20"
-features = ["fs", "io-util", "macros", "net", "parking_lot", "rt-multi-thread", "sync", "time"]
+version = "1.21"
+features = ["fs", "io-util", "macros", "net", "parking_lot", "rt-multi-thread", "signal", "sync", "time"]
 
 [dependencies.log]
 version = "0.4.17"
@@ -38,14 +38,11 @@ features = ["derive"]
 version = "0.5.9"
 
 [dependencies.async-trait]
-version = "0.1.53"
+version = "0.1.57"
 
 [dependencies.notify]
 version = "5.0"
 features = ["macos_fsevent"]
-
-[dependencies.ctrlc]
-version = "3.2"
 
 [dependencies.paste]
 version = "1.0"

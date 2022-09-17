@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{fmt, io};
 
-use crate::routers::{RouterAuto, RouterType};
+use crate::routers::RouterType;
 use async_trait::async_trait;
+use bytestr::ByteString;
 use log::{debug, error, trace, warn};
 use tokio::sync::RwLock;
 
@@ -70,6 +71,8 @@ pub enum CError {
 	InvalidRouter(String),
 	#[error("stop signals timed out")]
 	StopSignalTimeout,
+	#[error("stop signals cancelled")]
+	StopSignalCancel,
 	#[error("uncaught task-stop signal")]
 	TaskStop,
 	#[error("todo!")]
@@ -106,30 +109,28 @@ pub struct Address {
 pub struct AddressSubport {
 	pub host: Hostname,
 	pub port: u16,
-	pub subport: Option<String>,
+	pub subport: Option<ByteString>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct AddressPartial {
 	pub host: Option<Hostname>,
 	pub port: Option<u16>,
-	pub subport: Option<Option<String>>,
+	pub subport: Option<Option<ByteString>>,
 }
 
 impl Hostname {
 	pub fn to_ip_addr(&self) -> CResult<IpAddr> {
 		match self {
-			Hostname::V4([a, b, c, d]) => Ok(IpAddr::V4(Ipv4Addr::new(*a, *b, *c, *d))),
-			Hostname::V6([a, b, c, d, e, f, g, h]) => {
-				Ok(IpAddr::V6(Ipv6Addr::new(*a, *b, *c, *d, *e, *f, *g, *h)))
-			}
+			Hostname::V4(parts) => Ok(IpAddr::V4(Ipv4Addr::from(*parts))),
+			Hostname::V6(parts) => Ok(IpAddr::V6(Ipv6Addr::from(*parts))),
 			Hostname::Name(name) => name.parse().map_err(|v| CError::InvalidHost(name.clone())),
 		}
 	}
 }
 
 impl Address {
-	pub fn with_subport(self, subport: Option<String>) -> AddressSubport {
+	pub fn with_subport(self, subport: Option<ByteString>) -> AddressSubport {
 		AddressSubport {
 			host: self.host,
 			port: self.port,
@@ -138,6 +139,16 @@ impl Address {
 	}
 	pub fn to_socket(&self) -> CResult<SocketAddr> {
 		Ok(SocketAddr::new(self.host.to_ip_addr()?, self.port))
+	}
+	pub fn from_socket(addr: SocketAddr) -> Self {
+		Self {
+			host: match addr {
+				SocketAddr::V4(addr) => Hostname::V4(addr.ip().octets()),
+				SocketAddr::V6(addr) => Hostname::V6(addr.ip().segments()),
+			},
+			port: addr.port(),
+		}
+		// Ok(SocketAddr::new(self.host.to_ip_addr()?, self.port))
 	}
 }
 
@@ -317,9 +328,15 @@ fn address_from_str(s: &str, partial: bool) -> CResult<AddressPartial> {
 						return Err(make_err(InvalidAddrError::NoBlankHost));
 					}
 				} else if host == "*" {
-					Some(Hostname::V4([0, 0, 0, 0]))
+					Some(Hostname::V4(Ipv4Addr::UNSPECIFIED.octets()))
+				} else if host == "*6" {
+					Some(Hostname::V6(Ipv6Addr::UNSPECIFIED.segments()))
+				} else if host == "*n" {
+					Some(Hostname::Name("localhost".to_string()))
 				} else if host == "$" {
-					Some(Hostname::V4([127, 0, 0, 1]))
+					Some(Hostname::V4(Ipv4Addr::LOCALHOST.octets()))
+				} else if host == "$6" {
+					Some(Hostname::V6(Ipv6Addr::LOCALHOST.segments()))
 				} else if host.len() >= 4
 					&& host.as_bytes()[0] == b'['
 					&& host.chars().rev().next().unwrap() == ']'
@@ -426,7 +443,7 @@ fn address_from_str(s: &str, partial: bool) -> CResult<AddressPartial> {
 				return Err(make_err(InvalidAddrError::NoBlankSubport));
 			}
 		}
-		_ => Some(subport.map(str::to_owned)),
+		_ => Some(subport.map(|v| ByteString::from(v.to_owned()))),
 	};
 	Ok(AddressPartial {
 		host,
@@ -463,11 +480,21 @@ router_config! {
 }
 
 #[async_trait(?Send)]
-pub trait RouterInst: RouterAuto + fmt::Debug {
+pub trait RouterInst: fmt::Debug {
 	/// translate an address
-	async fn route(&self, addr: AddressSubport, env: &RouterEnv) -> CResult<Option<AddressSubport>>;
+	async fn impl_route(
+		&self,
+		addr: AddressSubport,
+		env: &RouterEnv,
+	) -> CResult<Option<AddressSubport>>;
 	/// get the list of addresses to bind to
-	async fn listen_addresses(&self) -> CResult<Vec<Address>>;
+	async fn impl_listen_addresses(&self) -> CResult<Vec<Address>>;
+	/// finalize & close the router
+	async fn impl_close(&mut self) -> CResult<()>;
+	/// get the type of the route
+	fn impl_router_type(&self) -> RouterType;
+	/// returns true if the router has been modified, and false from then on
+	fn impl_dirty_flag(&mut self) -> bool;
 }
 
 pub struct RouterSharedInner {
@@ -523,7 +550,7 @@ impl RouterEnv {
 			})),
 			routers: HashMap::new(),
 			current_depth: Cell::new(0),
-			current_router: RefCell::new((None, "none".to_string()))
+			current_router: RefCell::new((None, "none".to_string())),
 		}
 	}
 	pub fn path(&self) -> &Path {
@@ -543,7 +570,7 @@ impl RouterEnv {
 	pub async fn listen_addresses(&self) -> CResult<Vec<Address>> {
 		let mut out = HashSet::new();
 		for (id, router) in self.routers.iter() {
-			out.extend(router.listen_addresses().await?.into_iter());
+			out.extend(router.impl_listen_addresses().await?.into_iter());
 		}
 		Ok(out.into_iter().collect())
 	}
@@ -553,20 +580,25 @@ impl RouterEnv {
 	}
 	pub fn router_err(&self, message: String) -> CError {
 		let lock = self.current_router.borrow();
-		CError::RouterError(lock.0.as_ref().map_or("??", RouterType::to_str), lock.1.clone(), message)
+		CError::RouterError(
+			lock.0.as_ref().map_or("??", RouterType::to_str),
+			lock.1.clone(),
+			message,
+		)
 	}
 	pub async fn route(&self, id: &str, addr: AddressSubport) -> CResult<Option<AddressSubport>> {
 		trace!("routing {addr} with {id:?}");
 		if self.current_depth.get() <= self.shared.read().await.config.max_recursion {
 			self.current_depth.set(self.current_depth.get() + 1);
-			let router = self.routers
+			let router = self
+				.routers
 				.get(id)
 				.ok_or_else(|| CError::InvalidRouter(id.to_string()))?;
-			let old_router_info = self.current_router.replace((Some(router.router_type()), id.to_string()));
-			let res = router
-				.route(addr, self)
-				.await;
-			* self.current_router.borrow_mut() = old_router_info;
+			let old_router_info = self
+				.current_router
+				.replace((Some(router.impl_router_type()), id.to_string()));
+			let res = router.impl_route(addr, self).await;
+			*self.current_router.borrow_mut() = old_router_info;
 			res
 		} else {
 			Err(CError::RecursionError)

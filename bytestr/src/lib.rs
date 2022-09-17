@@ -1,21 +1,25 @@
-#![feature(allocator_api)]
+#![feature(allocator_api, utf8_chunks)]
 use std::borrow::Cow;
-use std::{mem, ops};
+use std::fmt::Write;
+use std::str::Utf8Chunks;
+use std::{fmt, mem, ops};
 
 #[cfg(test)]
 pub mod tests;
 
 // After making this i realized that maybe-string is a crate that exists, at least mine only has one unsafe!
 
+#[derive(Hash, Clone, PartialEq, Eq)]
 enum Inner {
 	String(String),
 	Bytes(Vec<u8>),
 }
 
 /// Byte-vector that might be UTF-8 data, without the performace penalty of checking validity every time you need it
+#[derive(Hash, Clone, PartialEq, Eq)]
 pub struct ByteString(Inner);
 
-/// Holder for mutable bytes reference to ensure you don't do too much nonsense
+/// Holder for mutable bytes reference to ensure you don't do too much nonsense.
 pub struct BytesMutLock<'bs>(&'bs mut ByteString, Vec<u8>);
 
 impl<'bs> ops::Deref for BytesMutLock<'bs> {
@@ -40,6 +44,10 @@ impl<'bs> ops::Drop for BytesMutLock<'bs> {
 }
 
 impl ByteString {
+	/// Create a new, empty ByteString
+	pub fn new() -> Self {
+		Self(Inner::String(String::new()))
+	}
 	/// Create a new ByteString from existing UTF-8 data
 	pub fn from_string(data: String) -> Self {
 		Self(Inner::String(data))
@@ -62,7 +70,7 @@ impl ByteString {
 			Inner::Bytes(data) => data,
 		}
 	}
-	/// Get a mutable reference to the byte-wise data
+	/// Get a mutable reference to the byte-wise data. For technical reasons the contents of the string becomes empty until the lock is dropped.
 	pub fn as_bytes_mut(&mut self) -> BytesMutLock {
 		// replaces self.0 with an empty Vec since:
 		// - BytesMutLock needs to own the data
@@ -128,12 +136,7 @@ impl ByteString {
 				Inner::Bytes(v) => v,
 				Inner::String(_) => unreachable!(),
 			};
-			let new = match String::from_utf8_lossy(&old) {
-				Cow::Owned(val) => val,
-				// SAFETY: if the cow is borrowed then the old data is valid
-				// TODO: see if there's a way to lossily convert in a consuming manner
-				Cow::Borrowed(_) => unsafe { String::from_utf8_unchecked(old) },
-			};
+			let new = string_from_bytes_lossy(old);
 			mem::drop(mem::replace(&mut self.0, Inner::String(new)));
 		}
 		if let Inner::String(data) = &mut self.0 {
@@ -152,6 +155,15 @@ impl ByteString {
 	}
 }
 
+// TODO: replace this with a proper method once one exists in the standard library
+fn string_from_bytes_lossy(bytes: Vec<u8>) -> String {
+	match String::from_utf8_lossy(&bytes) {
+		Cow::Owned(val) => val,
+		// SAFETY: if the cow is borrowed then the old data is valid
+		Cow::Borrowed(_) => unsafe { String::from_utf8_unchecked(bytes) },
+	}
+}
+
 impl From<String> for ByteString {
 	fn from(v: String) -> Self {
 		Self::from_string(v)
@@ -165,5 +177,55 @@ impl From<Vec<u8>> for ByteString {
 impl From<ByteString> for Vec<u8> {
 	fn from(v: ByteString) -> Self {
 		v.into_bytes()
+	}
+}
+
+impl Default for ByteString {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl fmt::Debug for ByteString {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		f.write_char('"')?;
+		for chunk in Utf8Chunks::new(self.as_bytes()) {
+			// f.write_str(chunk.valid())?;
+			for ch in chunk.valid().chars() {
+				if ch == '\'' {
+					f.write_char('\'')?;
+				}
+				write!(f, "{}", ch.escape_debug())?;
+			}
+			let invalid = chunk.invalid();
+			if !invalid.is_empty() {
+				f.write_str("\\i{")?;
+				for byte in invalid {
+					write!(f, "{:02x}", byte)?;
+				}
+				f.write_char('}')?;
+			}
+		}
+		f.write_char('"')?;
+		Ok(())
+		// write!(f, "{:?}", self.lossy_as_string())
+	}
+}
+
+impl fmt::Display for ByteString {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "{}", self.lossy_as_string())
+	}
+}
+
+impl PartialOrd for ByteString {
+	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+		self.as_bytes().partial_cmp(&other.as_bytes())
+	}
+}
+
+impl Ord for ByteString {
+	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+		self.as_bytes().cmp(&other.as_bytes())
 	}
 }

@@ -21,7 +21,7 @@ fn byte_data() {
 }
 
 #[test]
-fn transmute_data() {
+fn modify_validity() {
 	let mut st = ByteString::from("test 💖".to_string());
 	assert_eq!(st.try_as_string(), Some("test 💖"));
 	{
@@ -49,10 +49,7 @@ fn transmute_data() {
 		data.push(0xff);
 	}
 	assert_eq!(st.try_as_string(), None);
-	assert_eq!(
-		st.lossy_as_string(),
-		"test 💖 test\u{fffd}"
-	);
+	assert_eq!(st.lossy_as_string(), "test 💖 test\u{fffd}");
 	assert_eq!(st.try_as_string_mut(), None);
 	{
 		let data = st.lossy_as_string_mut();
@@ -66,4 +63,25 @@ fn transmute_data() {
 		}
 	}
 	assert_eq!(st.try_as_string(), Some("test 💖"));
+}
+
+#[test]
+fn forget_test() {
+	use std::mem;
+	let mut st = ByteString::from("test 💖".to_string());
+	{
+		let data = st.as_bytes_mut();
+		mem::forget(data);
+	}
+	assert_eq!(st.as_bytes(), []);
+}
+
+#[test]
+fn impl_test() {
+	let valid = ByteString::from("test 💖\n test".to_string());
+	let invalid = ByteString::from(b"test \xff\x00 \xf0\x9f\x92\x96 test".to_vec());
+	assert_eq!(format!("{valid}"), "test 💖\n test");
+	assert_eq!(format!("{valid:?}"), "\"test 💖\\n test\"");
+	assert_eq!(format!("{invalid}"), "test \u{fffd}\0 💖 test");
+	assert_eq!(format!("{invalid:?}"), "\"test \\i{ff}\\0 💖 test\"");
 }

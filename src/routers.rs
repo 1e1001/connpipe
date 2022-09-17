@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 
+use async_trait::async_trait;
 use log::{info, trace};
 use serde::Deserialize;
 use tokio::fs;
 
-use crate::common::{CError, CResult, RouterDyn, RouterEnv};
+use crate::common::{Address, AddressSubport, CError, CResult, RouterDyn, RouterEnv, RouterInst};
 
 macro_rules! define_routers {
 	($($type_name:tt $string_name:tt $mod_name:tt),*$(,)?) => {
@@ -15,10 +16,6 @@ macro_rules! define_routers {
 		#[non_exhaustive]
 		pub enum RouterType {
 			$($type_name,)*
-		}
-		pub trait RouterAuto {
-			fn router_type(&self) -> RouterType;
-			fn dirty_flag(&mut self) -> bool;
 		}
 		impl RouterType {
 			pub fn from_str(s: &str) -> CResult<Self> {
@@ -43,11 +40,20 @@ macro_rules! define_routers {
 				f.write_str(self.to_str())
 			}
 		}
-		$(impl RouterAuto for $mod_name::Router {
-			fn router_type(&self) -> RouterType {
+		$(#[async_trait(?Send)] impl RouterInst for $mod_name::Router {
+			async fn impl_route(&self, addr: AddressSubport, env: &RouterEnv) -> CResult<Option<AddressSubport>> {
+				self.route(addr, env).await
+			}
+			async fn impl_listen_addresses(&self) -> CResult<Vec<Address>> {
+				self.listen_addresses().await
+			}
+			async fn impl_close(&mut self) -> CResult<()> {
+				self.close().await
+			}
+			fn impl_router_type(&self) -> RouterType {
 				RouterType::$type_name
 			}
-			fn dirty_flag(&mut self) -> bool {
+			fn impl_dirty_flag(&mut self) -> bool {
 				let old_val = self.dirty;
 				self.dirty = false;
 				return old_val;
