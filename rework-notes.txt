@@ -1,0 +1,40 @@
+# connpipe rework
+
+## log format:
+[2022-09-16 23:40:00 LEVEL type/id] msg
+
+## address format:
+config: {connector}/{addr}:{port}!{subport}
+
+addr shorthands:
+- $4, $6, $n -> local, 127.0.0.1, [::1], localhost
+- *4, *6 -> all, 0.0.0.0, [::],
+
+## main task
+- event loop: (startup: config reload)
+	- event: config reload
+		- unload old routers (drop)
+		- load config file from $CONFIG/config.toml
+		- initialize Routers
+	- event: listen address reload
+		- kill conn tasks
+		- start conn tasks
+	- event: conn task error
+		- restart conn task
+	- event: interrupt
+		- kill conn and pipe tasks
+		- unload routers (drop)
+		- quit event loop
+
+## conn task
+- initialize ConnectorSource
+- loop
+	- wait for connection
+	- start pipe task
+
+## pipe task
+- read magic / subport
+- route event -> main
+- wait for route response
+- construct ConnectorSink
+- forward connection
