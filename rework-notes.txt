@@ -17,7 +17,8 @@ addr shorthands:
 - startup
 - shutdown
 - handling requests
-### phase 1: load logic types
+### phase 1: instantiate systems
+load default logic types
 $CONFIG/config.toml - initial loading
 [id]
 type = "dylib"
@@ -33,6 +34,54 @@ path = "lua/main.lua"
 [id4]
 type = "table"
 path = "table.toml"
+
+## alternative system api:
+- no instantiation of "types" of systems, systems are instead interned based on id (still re-loads systems, but dropped after determining it's interned)
+- hashmap of system id -> Box<dyn System>
+	- example: 1e1001.connpipe.core.tcp_connector
+		- not a reverse-dns, since those have the issue of needing to own a domain
+- systems can be dynamically generated (use a struct that reports an id based on how it was instantiated)
+- systems only unload during a full config reload (all unload in reverse order, then re-loaded)
+- systems export some number of routers, connectors, and converters
+	- routers are:
+		- an id (single string)
+		- a set of addresses to bind
+		- a function to map addresses to other addresses
+	- connectors are:
+		- an id (single string)
+		- an address type
+			- recommended to have some sort of optional !multiplex
+			- some number of aliases
+				- connector.{alias}
+				- system.name.triple.connector.{alias}
+				- e.g. websocket has aliases [ws, wss, websocket]
+				- only the alias component is given to the connector
+			- has methods for from/to string
+				- format: connector:[...]
+					- tcp:addr:port!multiplex
+					- udp:addr:port
+					- ws:addr:port/path!multiplex
+					- 1e1001.connpipe.core.tcp:addr:port
+				- will probably use some shared parser library
+			- methods to convert from/to a list of name+value (u*, i*, f*, bool, string, null)
+				- no bytestring support anymore; it's kinda painful. if you want to send arbitrary bytes then suffer.
+				- tcp -> addr:string port:u16 multiplex:null|string
+				- ws -> addr:string port:u16 path:null|string multiplex:null|string
+		- method to bind to an address
+		- connection structure
+			- AsyncRead / AsyncWrite
+
+struct SystemEnv {
+	async register_system(Box<dyn System>);
+	async register_router(Box<dyn Router>);
+	async register_connector(Box<dyn Connector>);
+}
+
+trait System {
+	id -> String;
+	async load(SystemEnv) -> CRes<()>;
+	ops::Drop
+}
 
 ## routing
 - a connector recieves a connection
