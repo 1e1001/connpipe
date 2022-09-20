@@ -1,7 +1,8 @@
 # connpipe rework
 
 ## log format:
-[2022-09-16 23:40:00 LEVEL type/id] msg
+[2022-09-16 23:40:00.670 LEVEL type/id] message
+[2022-09-16 23:40:00.670 LEVEL module] message
 
 ## address format:
 config: {connector}/{addr}:{port}!{subport}
@@ -9,6 +10,33 @@ config: {connector}/{addr}:{port}!{subport}
 addr shorthands:
 - $4, $6, $n -> local, 127.0.0.1, [::1], localhost
 - *4, *6 -> all, 0.0.0.0, [::],
+
+## systems
+- loading logic types
+- instantiating types
+- startup
+- shutdown
+- handling requests
+### phase 1: load logic types
+$CONFIG/config.toml - initial loading
+[id]
+type = "dylib"
+path = "dylib/libid{dylib}"
+# .dll/.so/.dylib
+[id2]
+type = "process"
+path = "proc/id2{exe}"
+# .exe//
+[id3]
+type = "lua"
+path = "lua/main.lua"
+[id4]
+type = "table"
+path = "table.toml"
+
+## routing
+- a connector recieves a connection
+- it sends the request to the configured router
 
 ## main task
 - event loop: (startup: config reload)
