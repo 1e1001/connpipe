@@ -83,6 +83,47 @@ trait System {
 	ops::Drop
 }
 
+## why do i keep adding new sections instead of just replacing them?
+at some point my git log's going to have like -yes lines, anyways
+
+- addresses:
+	- defined by a connector
+	- a set of non-unique shorthand id's
+		- e.g. websocket has "websocket" and "ws"
+			- it will error if you use a vague id
+		- can also be referenced by connector id
+			- e.g. 1e1001.conn.core.tcp:...
+			- prefix/suffix codes also work, e.g. 1e1001..tcp:... or 1e1001..core.ws:
+	- contains pure and impure parts
+		- pure is the "default" address type (e.g. for tcp it's ip:port)
+		- impure is the multiplex (prev. subport) component if the connection type supports one
+			- impure parts are (usually) optional
+	- mappings to and from general types
+		- strings
+		- comp-table (HashMap<String, Value>, where value in u*, i*, f*, String, bool, HashMap<String, Value>, Vec<Value>)
+- routers:
+	- instantiated off of a loaded template type
+	- a unique, user-defined id as to allow recursive routing
+	- a list of pure addresses to bind to (usually equivalent to all the ones it can route)
+		- needs to be explicitly enabled by the user in some mannar
+	- a programmatic mapping from one impure addresses to another
+	- router *user* must know the address types, router can optionally know (e.g. to provide better syntax)
+		- if the router does not know the address type, it uses the LLoC
+- connectors:
+	- singleton
+	- a globally-unique id
+		- dot-seperated list of utf-8 names
+			- not reverse-dns, because dns sucks, a similar format is recommended though
+			- e.g. 1e1001.conn.core.tcp
+	- an address type
+	- a function to bind to a pure address
+		- connections are returned as impure addresses
+	- a function to connect to an impure address
+	- a stream type (async read/write, and RAII)
+- etc. impl:
+	- `tracing` for logging
+	- "manager" pattern for creating instances of things
+
 ## routing
 - a connector recieves a connection
 - it sends the request to the configured router
