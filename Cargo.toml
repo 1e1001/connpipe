@@ -10,9 +10,6 @@ members = [
 	"bytestr"
 ]
 
-[dependencies.bytestr]
-path = "bytestr/"
-
 [dependencies.mlua]
 version = "0.8.3"
 features = ["lua54", "vendored", "async", "macros"]

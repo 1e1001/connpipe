@@ -81,7 +81,6 @@ name = "connpipe"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bytestr",
  "env_logger",
  "log",
  "mlua",

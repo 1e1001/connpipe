@@ -1,7 +1,10 @@
+use std::collections::HashMap;
 
-#[derive(thiserror::Error)]
+use tokio::io::{AsyncRead, AsyncWrite};
+
+#[derive(thiserror::Error, Debug)]
 enum CErr {
-	#[error("{}")]
+	#[error("{0}")]
 	Custom(String),
 }
 
@@ -11,7 +14,11 @@ fn main() {
 	println!("real");
 }
 
-type Dyn<T> = Box<dyn T>;
+macro_rules! dy {
+	($tl:ty $(+ $tr:ty)*) => {
+		Box<dyn $tl $(+ $tr)* +>
+	}
+}
 
 struct ConnectorId(Vec<String>);
 
@@ -38,15 +45,15 @@ struct AddressTable {
 
 trait Connector {
 	fn id(&self) -> &ConnectorId;
-	fn address_from_str(&self, s: &str) -> CRes<Dyn<Address>>;
-	fn address_from_table(&self, t: AddressTable) -> CRes<Dyn<Address>>;
-	fn bind(&self, addr: Dyn<Address>) -> CRes<Dyn<Connection>>;
+	fn address_from_str(&self, s: &str) -> CRes<dy![Address]>;
+	fn address_from_table(&self, t: AddressTable) -> CRes<dy![Address]>;
+	fn bind(&self, addr: Dyn<Address>) -> CRes<dy![Connection]>;
 }
 
 trait Connection: AsyncRead + AsyncWrite {}
 
 trait Router {
-	fn route(&self)
+	fn route(&self);
 }
 
-// trait RouterConstructor ?
+// trait RouterConstructor
