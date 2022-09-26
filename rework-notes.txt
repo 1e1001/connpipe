@@ -92,7 +92,7 @@ at some point my git log's going to have like -yes lines, anyways
 		- e.g. websocket has "websocket" and "ws"
 			- it will error if you use a vague id
 		- can also be referenced by connector id
-			- e.g. 1e1001.conn.core.tcp:...
+			- e.g. 1e1001.core.conn.tcp:...
 			- prefix/suffix codes also work, e.g. 1e1001..tcp:... or 1e1001..core.ws:
 	- contains pure and impure parts
 		- pure is the "default" address type (e.g. for tcp it's ip:port)
@@ -108,13 +108,13 @@ at some point my git log's going to have like -yes lines, anyways
 		- needs to be explicitly enabled by the user in some mannar
 	- a programmatic mapping from one impure addresses to another
 	- router *user* must know the address types, router can optionally know (e.g. to provide better syntax)
-		- if the router does not know the address type, it uses the LLoC
+		- if the router does not know the address type, it uses the comp-table
 - connectors:
 	- singleton
 	- a globally-unique id
 		- dot-seperated list of utf-8 names
 			- not reverse-dns, because dns sucks, a similar format is recommended though
-			- e.g. 1e1001.conn.core.tcp
+			- e.g. 1e1001.core.conn.tcp
 	- an address type
 	- a function to bind to a pure address
 		- connections are returned as impure addresses
@@ -123,6 +123,14 @@ at some point my git log's going to have like -yes lines, anyways
 - etc. impl:
 	- `tracing` for logging
 	- "manager" pattern for creating instances of things
+- loading process
+	- load core / builtin plugins
+		- 1e1001.core.conn.tcp
+		- 1e1001.core.conn.ws
+		- 1e1001.core.route.table
+		- 1e1001.core.route.dylib
+		- 1e1001.core.route.process
+		- 1e1001.core.route.lua
 
 ## routing
 - a connector recieves a connection

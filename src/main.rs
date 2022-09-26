@@ -15,17 +15,27 @@ fn main() {
 }
 
 macro_rules! dy {
-	($tl:ty $(+ $tr:ty)*) => {
-		Box<dyn $tl $(+ $tr)* +>
-	}
+	(& $($lt:lifetime)? mut $($tt:tt)+) => {
+		&$($lt)? mut dyn $($tt)+
+	};
+	(& $($lt:lifetime)? $($tt:tt)+) => {
+		&$($lt)? dyn $($tt)+
+	};
+	($($tt:tt)+) => {
+		Box<dyn $($tt)+ +>
+	};
 }
 
 struct ConnectorId(Vec<String>);
 
 trait Address {
+	fn conn(&self) -> dy![&Connector];
 	fn id(&self) -> &ConnectorId;
 	fn to_str(&self) -> String;
 	fn to_table(&self) -> AddressTable;
+	fn to_pure(&self) -> dy![Address] {
+		self.conn().address_from_table(self.to_table().into_pure()).unwrao()
+	}
 }
 
 enum AddressTableValue {
@@ -40,20 +50,39 @@ enum AddressTableValue {
 
 struct AddressTable {
 	id: ConnectorId,
-	parts: HashMap<String, AddressTableValue>,
+	pure_parts: HashMap<String, AddressTableValue>,
+	impure_parts: HashMap<String, AddressTableValue>,
+}
+
+impl AddressTable {
+	fn into_pure(self) -> Self {
+		Self {
+			impure_parts: HashMap::new(),
+			..self
+		}
+	}
 }
 
 trait Connector {
 	fn id(&self) -> &ConnectorId;
 	fn address_from_str(&self, s: &str) -> CRes<dy![Address]>;
 	fn address_from_table(&self, t: AddressTable) -> CRes<dy![Address]>;
-	fn bind(&self, addr: Dyn<Address>) -> CRes<dy![Connection]>;
+	fn bind(&self, addr: dy![Address]) -> CRes<dy![Connection]>;
 }
 
 trait Connection: AsyncRead + AsyncWrite {}
 
-trait Router {
-	fn route(&self);
+trait RouterConstructor {
+	fn id(&self) -> &ConnectorId;
+	fn new(&self /*constructor arguments*/) -> CRes<dy![Router]>;
 }
 
-// trait RouterConstructor
+trait Router {
+	fn id(&self) -> &str;
+	fn route(&self);
+	fn get_addresses(&self) -> dy![Iterator<Item=dy![Address]>];
+}
+
+trait Plugin {
+
+}
